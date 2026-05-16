@@ -2,6 +2,8 @@
 
 AI-powered agentic pipeline for drafting peer-reviewed journal manuscripts. Built on Claude (Anthropic API) with a Gradio web UI.
 
+![Demo](demo/hero.gif)
+
 ## Quick Start
 
 ```bash
