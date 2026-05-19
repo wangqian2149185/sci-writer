@@ -1,17 +1,7 @@
-.env
-.venv/
 __pycache__/
 *.pyc
-*.zip
+*.pyo
+.env
 input/
 output/
-
-# Large media files in demo
-demo/*.mov
-demo/*.mp4
-demo/demo1.gif
-demo/demo1_x3.gif
-demo/demo1_x5.gif
-demo/output-5x.gif
-demo/output-5x-10fps.gif
-demo/palette.png
+.claude/

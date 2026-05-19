@@ -103,6 +103,57 @@ def copy_doc(src: str, dst: str) -> Path:
     return dst_path
 
 
+def replace_references_section(filename: str, references: list[str]) -> Path:
+    """
+    Find the 'References' heading in the document and replace all content
+    beneath it with the new formatted list.  If no References section exists,
+    fall through to append_section.
+    """
+    doc = _get_or_create(filename)
+    paragraphs = doc.paragraphs
+    body = doc.element.body
+
+    # Locate the References heading
+    ref_heading_idx = None
+    for i, para in enumerate(paragraphs):
+        text = para.text.strip()
+        style = para.style.name
+        if (style.startswith("Heading") and "References" in text) or text == "References":
+            ref_heading_idx = i
+            break
+
+    if ref_heading_idx is None:
+        # No existing section — just append
+        refs_body = "\n\n".join(f"{i+1}. {r}" for i, r in enumerate(references))
+        return append_section(filename, "References", refs_body)
+
+    # Find where the next section begins (next heading) or end of document
+    next_section_idx = len(paragraphs)
+    for i in range(ref_heading_idx + 1, len(paragraphs)):
+        if paragraphs[i].style.name.startswith("Heading") and paragraphs[i].text.strip():
+            next_section_idx = i
+            break
+
+    # Remove all paragraphs between the heading and the next section
+    to_remove = [
+        paragraphs[i]._element
+        for i in range(ref_heading_idx + 1, next_section_idx)
+    ]
+    for elem in to_remove:
+        body.remove(elem)
+
+    # Insert reformatted reference entries immediately after the heading
+    heading_elem = paragraphs[ref_heading_idx]._element
+    heading_pos = list(body).index(heading_elem)
+    for i, ref in enumerate(references, 1):
+        p = doc.add_paragraph(f"{i}. {ref}")
+        p_elem = p._element
+        body.remove(p_elem)
+        body.insert(heading_pos + i, p_elem)
+
+    return save_doc(doc, filename)
+
+
 def save_references_md(references: list[str]) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / "references.md"

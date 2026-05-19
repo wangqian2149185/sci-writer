@@ -1,5 +1,5 @@
 """
-Manuscript Writing Agent — Gradio Web UI
+SciCooker — Gradio Web UI
 Sequential 10-stage pipeline for peer-reviewed journal manuscript drafting.
 """
 
@@ -48,7 +48,9 @@ def process_message(user_input: str, history: list, state: dict) -> tuple[str, l
         return handle_stage1(user_input, history, state)
     if stage == 2:
         return handle_stage2(user_input, history, state)
-    if stage == 3 and not state.get("_intro_bullets_generated"):
+    if stage == 3 and not state.get("_results_findings_confirmed"):
+        return handle_stage3_extract(user_input, history, state)
+    if stage == 3 and state.get("_results_findings_confirmed") and not state.get("_intro_bullets_generated"):
         return handle_stage3_keywords(user_input, history, state)
     if stage == 3 and state.get("_intro_bullets_generated") and not state.get("_intro_written"):
         return handle_stage3_select(user_input, history, state)
@@ -107,7 +109,7 @@ def handle_stage0(user_input: str, history: list, state: dict) -> tuple[str, lis
         return "", history, state
 
     reply = (
-        "## 👋 Welcome to the Manuscript Writing Agent\n\n"
+        "## 👋 Welcome to SciCooker\n\n"
         "I will guide you through drafting a complete peer-reviewed manuscript.\n\n"
         "**Expected folder structure:**\n"
         "```\n"
@@ -191,9 +193,9 @@ def handle_stage2(user_input: str, history: list, state: dict) -> tuple[str, lis
     if user_input.lower() in ("confirm", "yes", "y"):
         state = mark_stage_complete(state, 2)
         reply = (
-            "✅ Results confirmed. Moving to **Stage 3: Introduction** (with literature research).\n\n"
-            "Please provide keywords, field names, or any preferences for the literature search.\n"
-            "Example: `CRISPR gene editing, DNA repair mechanisms, cancer therapy`"
+            "✅ Results confirmed. Moving to **Stage 3: Introduction**.\n\n"
+            "First, I will extract the key findings from your Results section to anchor the Introduction's logic. "
+            "Type `start` to begin."
         )
         _chat(history, user_input, reply)
         return "", history, state
@@ -202,6 +204,66 @@ def handle_stage2(user_input: str, history: list, state: dict) -> tuple[str, lis
     state["_results_generated"] = False
     save_state(state)
     return handle_stage2("start", history, state)
+
+
+# ─── Stage 3-pre — extract Results findings ──
+
+def handle_stage3_extract(user_input: str, history: list, state: dict) -> tuple[str, list, dict]:
+    # Step 1 — run extraction if not yet done
+    if not state.get("_results_extracted"):
+        results_text = state["sections"].get("results", "")
+        if not results_text.strip():
+            _chat(history, user_input,
+                  "⚠️ No Results section found in state. Please complete Stage 2 first.")
+            return "", history, state
+
+        _chat_pending(history, user_input,
+                      "⏳ Extracting key findings from the Results section before drafting the Introduction...")
+        try:
+            from stages.stage3_intro import extract_results_findings
+            findings, display = extract_results_findings(results_text)
+            state["_results_findings"] = findings
+            state["_results_extracted"] = True
+            save_state(state)
+            _chat_update(history, display)
+        except Exception as e:
+            _chat_update(history, f"❌ Error extracting findings: {e}")
+        return "", history, state
+
+    # Step 2 — await user confirmation or accept edited list
+    if user_input.lower() in ("confirm", "yes", "y"):
+        state["_results_findings_confirmed"] = True
+        save_state(state)
+        reply = (
+            "✅ Findings confirmed. The Introduction will be anchored to these results.\n\n"
+            "Now please provide keywords, field names, or any preferences for the literature search.\n"
+            "Example: `CRISPR gene editing, DNA repair mechanisms, cancer therapy`"
+        )
+        _chat(history, user_input, reply)
+        return "", history, state
+
+    # User provided an edited/amended list — replace findings and re-display
+    if user_input.strip():
+        import re
+        updated = []
+        for line in user_input.split("\n"):
+            clean = re.sub(r"^[\d\.\-\•\*]+\s*", "", line.strip()).strip()
+            if clean:
+                updated.append(clean)
+        if updated:
+            state["_results_findings"] = updated
+            save_state(state)
+            display = (
+                "## Updated findings list\n\n"
+                + "\n".join(f"{i+1}. {f}" for i, f in enumerate(updated))
+                + "\n\n---\nType `confirm` to proceed, or continue editing."
+            )
+            _chat(history, user_input, display)
+            return "", history, state
+
+    _chat(history, user_input,
+          "Type `confirm` to proceed with the findings as listed, or paste an edited version.")
+    return "", history, state
 
 
 # ─── Stage 3a — keywords ─────────────────────
@@ -228,23 +290,49 @@ def handle_stage3_keywords(user_input: str, history: list, state: dict) -> tuple
 
 # ─── Stage 3b — bullet selection ─────────────
 
-def handle_stage3_select(user_input: str, history: list, state: dict) -> tuple[str, list, dict]:
+def _interpret_selection(user_input: str, bullets: list[str], total: int) -> list[int]:
+    """Call LLM to interpret user's paper selection. Returns 1-based indices."""
+    from utils.claude_client import chat
     import re
-    numbers = re.findall(r"\d+", user_input)
-    if not numbers:
-        _chat(history, user_input, "Please enter bullet numbers to include, e.g.: `1,3,5,7`")
+    titles = [b.split("\n")[0][:100] for b in bullets]
+    paper_list = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
+    prompt = (
+        f"The user was shown {total} papers and asked which to include in a manuscript introduction.\n\n"
+        f"Papers:\n{paper_list}\n\n"
+        f"User's response: \"{user_input}\"\n\n"
+        "Return ONLY a comma-separated list of 1-based paper numbers the user wants to include. "
+        "If the user wants all papers, return every number from 1 to {total}. No explanation, no other text."
+    ).replace("{total}", str(total))
+    response = chat([{"role": "user", "content": prompt}], max_tokens=300)
+    return [int(n) for n in re.findall(r"\d+", response) if 1 <= int(n) <= total]
+
+
+def handle_stage3_select(user_input: str, history: list, state: dict) -> tuple[str, list, dict]:
+    bullets = state.get("intro_bullets", [])
+    total = len(bullets)
+
+    if not user_input.strip():
+        _chat(history, user_input, "Please enter paper numbers to include, e.g.: `1,3,5` or `all`")
         return "", history, state
 
-    bullets = state.get("intro_bullets", [])
-    selected = [bullets[int(n) - 1] for n in numbers if 0 <= int(n) - 1 < len(bullets)]
-
-    state["selected_bullets"] = selected
-    save_state(state)
-
-    _chat_pending(history, user_input, f"⏳ Writing Introduction with {len(selected)} selected bullets...")
+    _chat_pending(history, user_input, "⏳ Interpreting selection and writing Introduction...")
     try:
+        indices = _interpret_selection(user_input, bullets, total)
+        if not indices:
+            _chat_update(history, "Could not determine which papers to include. Please specify numbers, e.g.: `1,3,5` or `all`")
+            return "", history, state
+
+        selected = [bullets[i - 1] for i in indices if 1 <= i <= total]
+        state["selected_bullets"] = selected
+        save_state(state)
+
         from stages.stage3_intro import write_introduction
-        intro, refs = write_introduction(selected, state["sections"].get("results", ""), state.get("references", []))
+        intro, refs = write_introduction(
+            selected,
+            state["sections"].get("results", ""),
+            state.get("references", []),
+            confirmed_findings=state.get("_results_findings"),
+        )
         state["sections"]["introduction"] = intro
         state["references"] = refs
         state["_intro_written"] = True
@@ -252,7 +340,7 @@ def handle_stage3_select(user_input: str, history: list, state: dict) -> tuple[s
         display = f"## Introduction (Stage 3)\n\n{intro}\n\nType `confirm` to proceed or paste corrections."
         _chat_update(history, display)
     except Exception as e:
-        _chat_update(history, f"❌ Error writing Introduction: {e}")
+        _chat_update(history, f"❌ Error: {e}")
     return "", history, state
 
 
@@ -402,6 +490,7 @@ def handle_stage6(user_input: str, history: list, state: dict) -> tuple[str, lis
 # ─── Stage 7 ─────────────────────────────────
 
 def handle_stage7(user_input: str, history: list, state: dict) -> tuple[str, list, dict]:
+    # 7a — generate title options
     if not state.get("_titles_generated"):
         _chat_pending(history, user_input, "⏳ Generating title suggestions...")
         try:
@@ -418,141 +507,584 @@ def handle_stage7(user_input: str, history: list, state: dict) -> tuple[str, lis
             _chat_update(history, f"❌ Error: {e}")
         return "", history, state
 
-    titles = state.get("_title_options", [])
-    chosen = user_input.strip()
+    # 7b — title selection
+    if not state.get("_title_chosen"):
+        titles = state.get("_title_options", [])
+        chosen = user_input.strip()
+        if chosen.isdigit():
+            idx = int(chosen) - 1
+            if 0 <= idx < len(titles):
+                chosen = titles[idx]
+        if not chosen:
+            _chat(history, user_input, "Please enter the number of your chosen title or paste a custom title.")
+            return "", history, state
 
-    if chosen.isdigit():
-        idx = int(chosen) - 1
-        if 0 <= idx < len(titles):
-            chosen = titles[idx]
-
-    if chosen:
         state["chosen_title"] = chosen
+        state["_title_chosen"] = True
         has_toned = (Path(ROOT) / "output" / "manuscript_toned.docx").exists()
         from stages.stage7_titles import apply_title
         apply_title(chosen, use_toned=has_toned)
         save_state(state)
-        state = mark_stage_complete(state, 7)
 
+        reply = (
+            f"✅ Title set: **{chosen}**\n\n"
+            "Now let's draft the **Acknowledgements** section.\n\n"
+            "Please provide the following information (include whatever applies):\n"
+            "- **Funding**: full agency name, grant number, PI name\n"
+            "- **Individual contributions**: name, role (e.g., technical assistance, statistical consultation)\n"
+            "- **AI tool disclosure**: tool name and how it was used (if applicable)\n"
+            "- **Data availability**: repository URL and DOI (if applicable)\n\n"
+            "Paste all relevant details, then press **Send**. "
+            "Type `skip` to leave a placeholder and proceed."
+        )
+        _chat(history, user_input, reply)
+        return "", history, state
+
+    # 7c — acknowledgements collection and generation
+    if not state.get("_acknowledgements_generated"):
+        if user_input.lower().strip() == "skip":
+            ack_text = (
+                "Funding: [FUNDING AGENCY, Grant No. XXXX, PI: NAME]. "
+                "[CONTRIBUTOR NAME] provided [CONTRIBUTION]. "
+                "All data and code are available at [REPOSITORY URL], DOI: [10.xxxx/xxxxx]."
+            )
+            from utils.doc_builder import append_section
+            append_section("manuscript_draft.docx", "Acknowledgements", ack_text)
+            state["sections"]["acknowledgements"] = ack_text
+        else:
+            _chat_pending(history, user_input, "⏳ Drafting Acknowledgements section...")
+            try:
+                from stages.stage7_titles import generate_acknowledgements
+                ack_text = generate_acknowledgements(user_input)
+                state["sections"]["acknowledgements"] = ack_text
+                _chat_update(history, f"## Acknowledgements\n\n{ack_text}\n\nType `confirm` to proceed or paste corrections.")
+            except Exception as e:
+                _chat_update(history, f"❌ Error: {e}")
+            state["_acknowledgements_generated"] = True
+            save_state(state)
+            return "", history, state
+
+        state["_acknowledgements_generated"] = True
+        save_state(state)
+        _chat(history, user_input, f"## Acknowledgements (placeholder)\n\n{ack_text}\n\nType `confirm` to proceed.")
+        return "", history, state
+
+    # 7d — confirm or correct acknowledgements
+    if user_input.lower() in ("confirm", "yes", "y"):
+        state = mark_stage_complete(state, 7)
         tone_files = list((ROOT / "input" / "tone_templates").glob("*.pdf")) + \
                      list((ROOT / "input" / "tone_templates").glob("*.docx"))
         if tone_files:
             reply = (
-                f"✅ Title set: **{chosen}**\n\n"
+                "✅ Acknowledgements confirmed.\n\n"
                 "Moving to **Stage 8: Tone Rewriting**.\n"
                 f"Found {len(tone_files)} tone template(s). I'll analyze them and rewrite the manuscript.\n"
                 "Type `start`."
             )
         else:
             reply = (
-                f"✅ Title set: **{chosen}**\n\n"
+                "✅ Acknowledgements confirmed.\n\n"
                 "No tone templates found — skipping Stage 8.\n"
-                "Moving to **Stage 9: Authorship**.\n"
-                "Please provide authors in order of contribution:\n"
-                "Format: `First Last | Affiliation 1 | Affiliation 2` (add `*` for corresponding author)\n"
-                "One author per line. When done, type `done`."
+                "Moving to **Stage 9: Authorship**.\n\n"
+                "Type `start` to begin collecting author information."
             )
             state["current_stage"] = 9
             save_state(state)
         _chat(history, user_input, reply)
         return "", history, state
 
-    _chat(history, user_input, "Please enter the number of your chosen title or paste a custom title.")
+    # Correction — regenerate
+    _chat_pending(history, user_input, "⏳ Regenerating Acknowledgements with your corrections...")
+    try:
+        from stages.stage7_titles import generate_acknowledgements
+        ack_text = generate_acknowledgements(user_input)
+        state["sections"]["acknowledgements"] = ack_text
+        save_state(state)
+        _chat_update(history, f"## Acknowledgements\n\n{ack_text}\n\nType `confirm` to proceed or paste corrections.")
+    except Exception as e:
+        _chat_update(history, f"❌ Error: {e}")
     return "", history, state
 
 
 # ─── Stage 8 ─────────────────────────────────
 
+_S8_MENU = (
+    "**Stage 8: Tone Rewriting**\n\n"
+    "Choose the style source for tone matching:\n\n"
+    "**`1`** — Use uploaded papers in `input/tone_templates/`\n"
+    "**`2`** — Search by author name and institution\n"
+    "**`3`** — Enter an ORCID iD directly\n\n"
+    "Reply with `1`, `2`, or `3`."
+)
+
+
+def _s8_run_orcid_analysis(orcid_id: str, author_name: str, user_input: str,
+                            history: list, state: dict) -> tuple[str, list, dict]:
+    """Shared helper: fetch ORCID papers, analyze, update history."""
+    _chat_pending(history, user_input,
+        f"⏳ Fetching papers for **{author_name}** (ORCID: `{orcid_id}`) "
+        "and analyzing writing style — this may take 2–3 minutes...")
+    try:
+        from stages.stage8_tone import analyze_tone_from_orcid
+        profile = analyze_tone_from_orcid(orcid_id, author_name)
+        if not profile:
+            _chat_update(history,
+                f"⚠️ No papers with retrievable abstracts found for ORCID `{orcid_id}`.\n\n"
+                "The profile may have no public works, or abstracts are paywalled.\n"
+                "Try uploading papers to `input/tone_templates/` and choose option `1`.\n\n"
+                + _S8_MENU)
+            state["_tone_step"] = "source_choice"
+        else:
+            state["_tone_profile"] = profile
+            state["_tone_step"] = "pending_rewrite"
+            _chat_update(history,
+                f"✅ Style profile generated for **{author_name}**.\n\n"
+                f"{profile[:1400]}{'...' if len(profile) > 1400 else ''}\n\n"
+                "---\nFull profile saved to `output/tone.md`.\n\n"
+                "Type `confirm` to rewrite the manuscript in this style, "
+                "or `restart` to choose a different style source.")
+    except Exception as e:
+        _chat_update(history, f"❌ Error during ORCID analysis: {e}")
+    save_state(state)
+    return "", history, state
+
+
 def handle_stage8(user_input: str, history: list, state: dict) -> tuple[str, list, dict]:
-    if not state.get("_tone_done"):
-        _chat_pending(history, user_input, "⏳ Analyzing tone templates and rewriting manuscript (this may take a few minutes)...")
-        try:
-            from stages.stage8_tone import analyze_tone, rewrite_in_tone
-            tone = analyze_tone()
-            if not tone:
-                _chat_update(history, "No tone templates found. Skipping Stage 8.")
-                state = mark_stage_complete(state, 8)
-                save_state(state)
-                return "", history, state
+    step = state.get("_tone_step", "init")
 
-            rewrite_in_tone(tone)
-            state["tone_analyzed"] = True
-            state["_tone_done"] = True
-            save_state(state)
-            _chat_update(history, (
-                "✅ Manuscript rewritten in author's tone → `output/manuscript_toned.docx`\n\n"
-                "Type `confirm` to proceed."
-            ))
-        except Exception as e:
-            _chat_update(history, f"❌ Error: {e}")
-        return "", history, state
-
-    if user_input.lower() in ("confirm", "yes", "y"):
-        state = mark_stage_complete(state, 8)
+    # ── init — show source options ─────────────────────────────────────────────
+    if step == "init":
+        state["_tone_step"] = "source_choice"
+        save_state(state)
+        tone_dir = ROOT / "input" / "tone_templates"
+        n_files = sum(1 for f in tone_dir.glob("*") if f.suffix in (".pdf", ".docx", ".txt"))
+        hint = f" ({n_files} file(s) found)" if n_files else " *(no files yet — upload PDFs/DOCXs first)*"
         reply = (
-            "Moving to **Stage 9: Authorship**.\n\n"
-            "Please provide authors in order of contribution (one per line):\n"
-            "`First Last | Affiliation 1 | Affiliation 2`\n"
-            "Add `*` after the corresponding author's name.\n\n"
-            "When done listing all authors, type `done` on the last line."
+            "**Stage 8: Tone Rewriting**\n\n"
+            "Choose the style source for tone matching:\n\n"
+            f"**`1`** — Use uploaded papers in `input/tone_templates/`{hint}\n"
+            "**`2`** — Search by author name and institution → auto-fetch ORCID + papers\n"
+            "**`3`** — Enter an ORCID iD directly\n\n"
+            "Reply with `1`, `2`, or `3`."
         )
         _chat(history, user_input, reply)
         return "", history, state
 
-    _chat(history, user_input, "Type `confirm` to proceed.")
-    return "", history, state
+    # ── source choice ──────────────────────────────────────────────────────────
+    if step == "source_choice":
+        c = user_input.strip()
+
+        if c == "1":
+            _chat_pending(history, user_input,
+                "⏳ Analyzing tone templates and building style profile (may take a few minutes)...")
+            try:
+                from stages.stage8_tone import analyze_tone
+                profile = analyze_tone()
+                if not profile:
+                    state["_tone_step"] = "source_choice"
+                    save_state(state)
+                    _chat_update(history,
+                        "⚠️ No files found in `input/tone_templates/`. "
+                        "Upload PDFs or DOCX papers, then reply `1` again.\n\n"
+                        + _S8_MENU)
+                else:
+                    state["_tone_profile"] = profile
+                    state["_tone_step"] = "pending_rewrite"
+                    save_state(state)
+                    _chat_update(history,
+                        "✅ Style profile generated from uploaded templates.\n\n"
+                        f"{profile[:1400]}{'...' if len(profile) > 1400 else ''}\n\n"
+                        "---\nFull profile saved to `output/tone.md`.\n\n"
+                        "Type `confirm` to rewrite the manuscript in this style, "
+                        "or `restart` to choose a different style source.")
+            except Exception as e:
+                _chat_update(history, f"❌ Error analyzing templates: {e}")
+            return "", history, state
+
+        elif c == "2":
+            state["_tone_step"] = "name_entry"
+            save_state(state)
+            _chat(history, user_input,
+                "Enter the author's full name and institution:\n\n"
+                "Format: `Last, First | Institution`\n\n"
+                "Example: `Zhang, Feng | Broad Institute of MIT and Harvard`\n\n"
+                "*(Institution is optional but improves search accuracy.)*")
+            return "", history, state
+
+        elif c == "3":
+            state["_tone_step"] = "orcid_entry"
+            save_state(state)
+            _chat(history, user_input,
+                "Enter the ORCID iD:\n\n"
+                "Format: `XXXX-XXXX-XXXX-XXXX`\n\n"
+                "Example: `0000-0001-8593-9998`")
+            return "", history, state
+
+        else:
+            _chat(history, user_input, "Please reply with `1`, `2`, or `3`.")
+            return "", history, state
+
+    # ── name entry — ORCID lookup (API + web fallback inline) ─────────────────
+    if step == "name_entry":
+        val = user_input.strip()
+        if not val:
+            _chat(history, user_input,
+                "Please enter the author's name (and optionally institution after `|`).")
+            return "", history, state
+
+        parts = [p.strip() for p in val.split("|")]
+        name = parts[0]
+        institution = parts[1] if len(parts) > 1 else ""
+        state["_tone_author_query"] = name
+        save_state(state)
+
+        _chat_pending(history, user_input, f"⏳ Searching ORCID registry for **{name}**...")
+        try:
+            from stages.stage8_tone import search_orcid_by_name, search_orcid_web
+            candidates = search_orcid_by_name(name, institution)
+
+            if candidates:
+                state["_tone_orcid_candidates"] = candidates
+                state["_tone_step"] = "name_results"
+                save_state(state)
+                lines = [f"Found **{len(candidates)}** ORCID profile(s):\n"]
+                for i, cand in enumerate(candidates, 1):
+                    aff = f" — {cand['institution']}" if cand["institution"] else ""
+                    lines.append(
+                        f"**{i}.** {cand['name']}{aff}  \n"
+                        f"   ORCID: `{cand['orcid_id']}`"
+                    )
+                lines += [
+                    "",
+                    "Reply with the **number** of the correct match, paste an ORCID iD directly, "
+                    "or type `none` if none of these is correct.",
+                ]
+                _chat_update(history, "\n".join(lines))
+
+            else:
+                _chat_update(history,
+                    f"⏳ No registry matches for **'{name}'**. Searching the web...")
+                orcid_id, snippet = search_orcid_web(name)
+                if orcid_id:
+                    state["_tone_orcid_candidates"] = [
+                        {"orcid_id": orcid_id, "name": name, "institution": ""}
+                    ]
+                    state["_tone_step"] = "name_results"
+                    save_state(state)
+                    _chat_update(history,
+                        f"Found via web search:\n\n"
+                        f"**1.** `{orcid_id}` — {snippet[:120]}\n\n"
+                        "Reply `1` to confirm, paste a different ORCID iD, "
+                        "or type `none` to enter manually.")
+                else:
+                    state["_tone_step"] = "orcid_entry"
+                    save_state(state)
+                    _chat_update(history,
+                        f"Could not locate ORCID for **'{name}'** via registry or web search.\n\n"
+                        "Please enter the ORCID iD manually (format: `XXXX-XXXX-XXXX-XXXX`):")
+
+        except Exception as e:
+            _chat_update(history, f"❌ Error during ORCID search: {e}")
+        return "", history, state
+
+    # ── name results — user picks a candidate, then we analyze inline ──────────
+    if step == "name_results":
+        import re as _re
+        val = user_input.strip()
+        candidates = state.get("_tone_orcid_candidates", [])
+
+        if val.lower() == "none":
+            state["_tone_step"] = "orcid_entry"
+            save_state(state)
+            _chat(history, user_input,
+                "Please enter the ORCID iD manually:\n\n"
+                "Format: `XXXX-XXXX-XXXX-XXXX`")
+            return "", history, state
+
+        orcid_id = ""
+        author_name = state.get("_tone_author_query", "")
+
+        if val.isdigit():
+            idx = int(val) - 1
+            if 0 <= idx < len(candidates):
+                orcid_id = candidates[idx]["orcid_id"]
+                author_name = candidates[idx]["name"] or author_name
+            else:
+                _chat(history, user_input,
+                    f"Invalid number. Enter 1–{len(candidates)}, paste an ORCID iD, or type `none`.")
+                return "", history, state
+        elif _re.match(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$", val):
+            orcid_id = val
+        else:
+            _chat(history, user_input,
+                "Enter the number of the correct match, paste an ORCID iD, or type `none`.")
+            return "", history, state
+
+        state["_tone_orcid"] = orcid_id
+        state["_tone_author_name"] = author_name
+        save_state(state)
+        return _s8_run_orcid_analysis(orcid_id, author_name, user_input, history, state)
+
+    # ── direct ORCID entry — validate then analyze inline ─────────────────────
+    if step == "orcid_entry":
+        import re as _re
+        val = user_input.strip()
+        if not _re.match(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$", val):
+            _chat(history, user_input,
+                "⚠️ Invalid ORCID format. Expected `XXXX-XXXX-XXXX-XXXX`\n\n"
+                "Example: `0000-0001-8593-9998`")
+            return "", history, state
+
+        author_name = state.get("_tone_author_query", val)
+        state["_tone_orcid"] = val
+        state["_tone_author_name"] = author_name
+        save_state(state)
+        return _s8_run_orcid_analysis(val, author_name, user_input, history, state)
+
+    # ── pending rewrite — confirm then rewrite ─────────────────────────────────
+    if step == "pending_rewrite":
+        val = user_input.strip().lower()
+
+        if val == "restart":
+            for k in ("_tone_profile", "_tone_orcid", "_tone_author_name",
+                      "_tone_orcid_candidates", "_tone_author_query"):
+                state.pop(k, None)
+            state["_tone_step"] = "source_choice"
+            save_state(state)
+            _chat(history, user_input, _S8_MENU)
+            return "", history, state
+
+        if val not in ("confirm", "yes", "y"):
+            _chat(history, user_input,
+                "Type `confirm` to rewrite the manuscript in the analyzed style, "
+                "or `restart` to choose a different style source.")
+            return "", history, state
+
+        _chat_pending(history, user_input,
+            "⏳ Rewriting manuscript in analyzed style — this may take 3–5 minutes...")
+        try:
+            from stages.stage8_tone import rewrite_in_tone
+            rewrite_in_tone(state.get("_tone_profile", ""))
+            state["_tone_step"] = "done"
+            state["_tone_done"] = True
+            save_state(state)
+            _chat_update(history,
+                "✅ Manuscript rewritten → `output/manuscript_toned.docx`\n\n"
+                "Style compliance report → `output/style_compliance_report.md`\n\n"
+                "Type `confirm` to proceed to **Stage 9: Authorship**.")
+        except Exception as e:
+            _chat_update(history, f"❌ Error during rewriting: {e}")
+        return "", history, state
+
+    # ── done — confirm and advance ─────────────────────────────────────────────
+    if step == "done":
+        if user_input.strip().lower() in ("confirm", "yes", "y"):
+            state = mark_stage_complete(state, 8)
+            save_state(state)
+            _chat(history, user_input,
+                "✅ Tone rewriting complete.\n\n"
+                "Moving to **Stage 9: Authorship**.\n\n"
+                "Type `start` to begin collecting author information.")
+        else:
+            _chat(history, user_input, "Type `confirm` to proceed to Stage 9.")
+        return "", history, state
+
+    # Fallback
+    state["_tone_step"] = "init"
+    save_state(state)
+    return handle_stage8("", history, state)
 
 
 # ─── Stage 9 ─────────────────────────────────
 
-def handle_stage9(user_input: str, history: list, state: dict) -> tuple[str, list, dict]:
-    if not state.get("_author_input_collecting"):
-        state["_author_buffer"] = ""
-        state["_author_input_collecting"] = True
-        save_state(state)
+_STAGE9_STEP1 = (
+    "**Step 1 of 3 — First Author**\n\n"
+    "Enter the first author's name and affiliations:\n\n"
+    "Format: `Last, First | Affiliation 1 | Affiliation 2`\n\n"
+    "Example: `Smith, John | Department of Biology, MIT | Broad Institute`"
+)
 
-    if "done" in user_input.lower():
-        raw_authors = state.get("_author_buffer", "") + "\n" + user_input.replace("done", "").strip()
-        if not raw_authors.strip():
-            _chat(history, user_input, "No author input found. Please provide at least one author.")
+_STAGE9_STEP2 = (
+    "**Step 2 of 3 — Corresponding Author**\n\n"
+    "Enter the corresponding author's name, affiliations, and email:\n\n"
+    "Format: `Last, First | Affiliation 1 | Affiliation 2 | email@institution.edu`\n\n"
+    "If the corresponding author is the same as the first author, enter their details again (with email)."
+)
+
+_STAGE9_STEP3 = (
+    "**Step 3 of 3 — Other Authors**\n\n"
+    "Enter each remaining author on a separate line, in decreasing priority order:\n\n"
+    "Format: `Last, First | Affiliation 1 | Affiliation 2`\n\n"
+    "Type `done` when all authors have been entered, or `done` immediately if there are no other authors."
+)
+
+
+def handle_stage9(user_input: str, history: list, state: dict) -> tuple[str, list, dict]:
+    step = state.get("_author_step", "init")
+
+    # ── init ──────────────────────────────────────────────────────────────────
+    if step == "init":
+        state["_author_step"] = "first_author"
+        state["_author_others_buf"] = []
+        save_state(state)
+        _chat(history, user_input, _STAGE9_STEP1)
+        return "", history, state
+
+    # ── collect first author ───────────────────────────────────────────────
+    if step == "first_author":
+        if not user_input.strip() or "|" not in user_input:
+            _chat(history, user_input,
+                  "⚠️ Invalid format. Please use: `Last, First | Affiliation 1 | Affiliation 2`")
             return "", history, state
 
-        state["_author_raw"] = raw_authors
-        state["_awaiting_email"] = True
+        from stages.stage9_authors import parse_author_line
+        state["_author_first"] = parse_author_line(user_input.strip())
+        state["_author_step"] = "corresponding"
         save_state(state)
-        _chat(history, user_input, "Please enter the corresponding author's email address:")
+        _chat(history, user_input, _STAGE9_STEP2)
         return "", history, state
 
-    if state.get("_awaiting_email"):
-        email = user_input.strip()
-        raw_authors = state.get("_author_raw", "")
-        try:
-            from stages.stage9_authors import parse_author_input, format_author_block, insert_authors_into_doc
-            authors = parse_author_input(raw_authors)
-            author_line, aff_block = format_author_block(authors, email)
-            state["authors"] = authors
+    # ── collect corresponding author ───────────────────────────────────────
+    if step == "corresponding":
+        if not user_input.strip() or "|" not in user_input:
+            _chat(history, user_input,
+                  "⚠️ Invalid format. Please use: `Last, First | Affiliation 1 | email@domain.com`")
+            return "", history, state
 
-            has_toned = (ROOT / "output" / "manuscript_toned.docx").exists()
-            filename = "manuscript_toned.docx" if has_toned else "manuscript_draft.docx"
-            insert_authors_into_doc(filename, author_line, aff_block)
-            state["_awaiting_email"] = False
-            state["_author_input_collecting"] = False
+        from stages.stage9_authors import parse_corresponding_line
+        state["_author_corresponding"] = parse_corresponding_line(user_input.strip())
+        state["_author_step"] = "others"
+        save_state(state)
+        _chat(history, user_input, _STAGE9_STEP3)
+        return "", history, state
+
+    # ── collect other authors (multi-line, terminated by "done") ──────────
+    if step == "others":
+        if user_input.strip().lower() == "done":
+            state["_author_step"] = "co_first"
             save_state(state)
-            state = mark_stage_complete(state, 9)
-            reply = (
-                f"✅ Authors formatted:\n\n**{author_line}**\n\n{aff_block}\n\n"
-                "Moving to **Stage 10: Journal Formatting**.\n\n"
-                "Which journal are you targeting? (e.g., 'Nature', 'Cell', 'PLOS ONE', 'Journal of Biological Chemistry')"
-            )
-            _chat(history, user_input, reply)
-        except Exception as e:
-            _chat(history, user_input, f"❌ Error: {e}")
+            others = state.get("_author_others_buf", [])
+            if others:
+                names = ", ".join(a["name"] for a in others)
+                buf_display = f"Other authors recorded: {names}\n\n"
+            else:
+                buf_display = "No other authors recorded.\n\n"
+            _chat(history, user_input,
+                  buf_display + "Are there any **co-first authors** (authors who contributed equally)? "
+                  "Reply `yes` or `no`.")
+            return "", history, state
+
+        if not user_input.strip() or "|" not in user_input:
+            _chat(history, user_input,
+                  "⚠️ Invalid format. Use: `Last, First | Affiliation 1 | Affiliation 2`  "
+                  "— or type `done` if there are no more authors.")
+            return "", history, state
+
+        from stages.stage9_authors import parse_author_line
+        author = parse_author_line(user_input.strip())
+        buf = state.get("_author_others_buf", [])
+        buf.append(author)
+        state["_author_others_buf"] = buf
+        save_state(state)
+        _chat(history, user_input,
+              f"✓ Added: **{author['name']}**. Enter the next author or type `done` to finish.")
         return "", history, state
 
-    state["_author_buffer"] = state.get("_author_buffer", "") + "\n" + user_input
+    # ── co-first yes/no ───────────────────────────────────────────────────
+    if step == "co_first":
+        if user_input.strip().lower() in ("yes", "y"):
+            state["_author_step"] = "co_first_names"
+            save_state(state)
+            _chat(history, user_input,
+                  "List the names of all co-first authors (comma-separated), "
+                  "exactly as entered above.\n\nExample: `Smith, John, Lee, Jane`")
+            return "", history, state
+
+        if user_input.strip().lower() in ("no", "n"):
+            state["_co_first_names"] = []
+            state["_author_step"] = "generate"
+            save_state(state)
+            return handle_stage9("", history, state)
+
+        _chat(history, user_input, "Please reply `yes` or `no`.")
+        return "", history, state
+
+    # ── collect co-first author names ─────────────────────────────────────
+    if step == "co_first_names":
+        names = [n.strip() for n in user_input.replace(";", ",").split(",") if n.strip()]
+        state["_co_first_names"] = names
+        state["_author_step"] = "generate"
+        save_state(state)
+        return handle_stage9("", history, state)
+
+    # ── generate author block ─────────────────────────────────────────────
+    if step == "generate":
+        from stages.stage9_authors import (
+            assign_affiliation_symbols, format_author_block, insert_authors_into_doc
+        )
+
+        first = state.get("_author_first", {})
+        corresponding = state.get("_author_corresponding", {})
+        others = state.get("_author_others_buf", [])
+        co_first_names = state.get("_co_first_names", [])
+
+        ordered = [first] + others + ([] if first["name"].strip().lower() == corresponding["name"].strip().lower() else [corresponding])
+        aff_to_sym = assign_affiliation_symbols(ordered)
+        author_line, aff_block = format_author_block(first, corresponding, others, co_first_names, aff_to_sym)
+
+        state["_author_line"] = author_line
+        state["_author_aff_block"] = aff_block
+        state["_author_step"] = "confirm"
+        save_state(state)
+
+        preview = (
+            "## Author Block Preview\n\n"
+            f"**{author_line}**\n\n"
+            f"{aff_block}\n\n"
+            "---\nType `confirm` to insert this into the manuscript, "
+            "or `restart` to re-enter all author information."
+        )
+        _chat(history, user_input, preview)
+        return "", history, state
+
+    # ── confirm / restart ─────────────────────────────────────────────────
+    if step == "confirm":
+        if user_input.strip().lower() == "restart":
+            for k in ("_author_step", "_author_first", "_author_corresponding",
+                      "_author_others_buf", "_co_first_names", "_author_line", "_author_aff_block"):
+                state.pop(k, None)
+            state["_author_step"] = "init"
+            save_state(state)
+            return handle_stage9("", history, state)
+
+        if user_input.strip().lower() in ("confirm", "yes", "y"):
+            author_line = state.get("_author_line", "")
+            aff_block = state.get("_author_aff_block", "")
+            try:
+                from stages.stage9_authors import insert_authors_into_doc
+                has_toned = (ROOT / "output" / "manuscript_toned.docx").exists()
+                filename = "manuscript_toned.docx" if has_toned else "manuscript_draft.docx"
+                insert_authors_into_doc(filename, author_line, aff_block)
+                state = mark_stage_complete(state, 9)
+                save_state(state)
+                reply = (
+                    f"✅ Authors inserted into `{filename}`.\n\n"
+                    "Moving to **Stage 10: Journal Formatting**.\n\n"
+                    "Which journal are you targeting?\n"
+                    "Examples: `Nature`, `Cell`, `PLOS ONE`, `Journal of Biological Chemistry`"
+                )
+                _chat(history, user_input, reply)
+            except Exception as e:
+                _chat(history, user_input, f"❌ Error inserting authors: {e}")
+            return "", history, state
+
+        _chat(history, user_input, "Type `confirm` to proceed or `restart` to re-enter author information.")
+        return "", history, state
+
+    # Fallback — re-enter init
+    state["_author_step"] = "init"
     save_state(state)
-    _chat(history, user_input, "Author line recorded. Continue adding authors or type `done` when finished.")
-    return "", history, state
+    return handle_stage9("", history, state)
 
 
 # ─── Stage 10 ─────────────────────────────────
@@ -609,10 +1141,10 @@ def handle_stage10(user_input: str, history: list, state: dict) -> tuple[str, li
 # ──────────────────────────────────────────────
 
 def create_app():
-    with gr.Blocks(title="Manuscript Writing Agent") as app:
+    with gr.Blocks(title="SciCooker") as app:
         state = gr.State(load_state)
 
-        gr.Markdown("# 📄 Manuscript Writing Agent\nAI-powered peer-reviewed manuscript pipeline")
+        gr.Markdown("# 📄 SciCooker\nAI-powered peer-reviewed manuscript pipeline")
 
         with gr.Row():
             with gr.Column(scale=3):

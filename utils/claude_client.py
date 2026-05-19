@@ -25,7 +25,12 @@ _load_env()
 def get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not set. "
+                "Add it to a .env file in the project folder or export it in your shell."
+            )
         _client = anthropic.Anthropic(api_key=api_key)
     return _client
 

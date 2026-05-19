@@ -2,16 +2,18 @@ from pathlib import Path
 from utils.figure_checker import get_figure_files, encode_image_base64
 from utils.claude_client import chat_with_vision
 from utils.doc_builder import write_captions_doc
+from utils.writing_standards import WRITING_STANDARDS
 
 ROOT = Path(__file__).parent.parent
 FIGURES_DIR = ROOT / "input" / "figures"
 CAPTIONS_DIR = ROOT / "input" / "captions"
 
 SYSTEM = (
-    "You are a scientific manuscript assistant. Write professional, journal-style figure captions. "
+    "You are a scientific manuscript assistant specializing in figure captions. "
+    "Write professional, journal-style figure captions. "
     "Base your caption ONLY on the image content and the user-supplied caption text. "
-    "Never invent data, values, or interpretations not visible in the image or stated in the caption text. "
-    "Keep the tone formal and scientific."
+    "Never invent data, values, or interpretations not visible in the image or stated in the caption text.\n\n"
+    + WRITING_STANDARDS
 )
 
 
