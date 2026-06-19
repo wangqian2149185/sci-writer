@@ -1,6 +1,15 @@
 from pathlib import Path
 from utils.claude_client import chat
 from utils.doc_builder import append_section, save_references_md, replace_references_section
+from utils.entity_registry import audit_and_save, format_entity_constraints
+from utils.reference_manager import (
+    bibliography_from_table,
+    format_sources_for_prompt,
+    load_reference_table,
+    merge_reference_records,
+    parse_reference_bullets,
+    save_reference_table,
+)
 from utils.writing_standards import WRITING_STANDARDS
 from docx import Document
 
@@ -110,13 +119,18 @@ def generate_discussion(
     references: list[str],
     merge: bool = False,
 ) -> tuple[str, list[str]]:
-    bullets_text = "\n".join(f"{i+1}. {b}" for i, b in enumerate(selected_bullets))
+    source_records = parse_reference_bullets(selected_bullets)
+    reference_table = merge_reference_records(load_reference_table(), references)
+    reference_table = merge_reference_records(reference_table, source_records)
+    save_reference_table(reference_table)
+    bullets_text = format_sources_for_prompt(source_records)
 
     prompt = (
         f"Write a Discussion section for a scientific manuscript.\n\n"
+        f"{format_entity_constraints()}\n\n"
         f"Results:\n{results_text[:2000]}\n\n"
         f"Introduction context:\n{intro_text[:1000]}\n\n"
-        f"Available literature (cite using superscript numbers):\n{bullets_text}\n\n"
+        f"Canonical literature sources (cite using superscript numbers):\n{bullets_text}\n\n"
         "The Discussion must include:\n"
         "1. Direct answer to the research question, stating whether each hypothesis was supported or refuted\n"
         "2. Interpretation of each major finding relative to published literature\n"
@@ -132,10 +146,12 @@ def generate_discussion(
         "in order of first appearance continuing from the Introduction sequence. "
         "Example: '...consistent with previous observations in animal models.¹⁵¹⁶'\n"
         "- Do not cluster citations at paragraph ends — attach each to its specific sentence.\n"
-        "- Only cite sources from the literature bullets above. Never fabricate references."
+        "- Only cite canonical sources above. Never fabricate references.\n"
+        "- Treat each SOURCE_ID as one unique paper even if a citation appears in variant forms."
     )
 
     discussion = chat([{"role": "user", "content": prompt}], system=SYSTEM, max_tokens=5000)
+    audit_and_save(discussion, label="entity_audit_discussion")
 
     if merge:
         draft_path = OUTPUT / "manuscript_draft.docx"
@@ -148,11 +164,13 @@ def generate_discussion(
         append_section("manuscript_draft.docx", "Discussion", discussion)
 
     conclusion = generate_conclusion(discussion, results_text, intro_text)
+    audit_and_save("\n\n".join([discussion, conclusion]), label="entity_audit_discussion_conclusion")
     append_section("manuscript_draft.docx", "Conclusion", conclusion)
 
     # Append References section after Conclusion, unified manuscript numbering
-    if references:
-        replace_references_section("manuscript_draft.docx", references)
-        save_references_md(references)
+    canonical_refs = bibliography_from_table(load_reference_table())
+    if canonical_refs:
+        replace_references_section("manuscript_draft.docx", canonical_refs)
+        save_references_md(canonical_refs)
 
-    return discussion, references
+    return discussion, canonical_refs

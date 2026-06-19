@@ -2,6 +2,7 @@ from pathlib import Path
 from utils.figure_checker import get_figure_files, encode_image_base64
 from utils.claude_client import chat_with_vision
 from utils.doc_builder import write_captions_doc
+from utils.entity_registry import audit_and_save, format_entity_constraints
 from utils.writing_standards import WRITING_STANDARDS
 
 ROOT = Path(__file__).parent.parent
@@ -42,6 +43,7 @@ def generate_captions(figure_order: list[str] | None = None) -> tuple[list[tuple
         if fig_path.suffix.lower() == ".svg":
             prompt = (
                 f"The following is an SVG figure (vector format, cannot be displayed as image). "
+                f"{format_entity_constraints()}\n\n"
                 f"User-supplied caption text: {raw_caption}\n\n"
                 f"Write a professional, journal-style figure caption for Figure {i} based ONLY on the supplied caption text."
             )
@@ -54,6 +56,7 @@ def generate_captions(figure_order: list[str] | None = None) -> tuple[list[tuple
         else:
             b64, mtype = encode_image_base64(fig_path)
             prompt = (
+                f"{format_entity_constraints()}\n\n"
                 f"User-supplied caption text for Figure {i}: {raw_caption}\n\n"
                 f"Write a professional, journal-style figure caption based ONLY on what you see in this image "
                 f"and the supplied caption text. Do not invent data or interpretations."
@@ -64,6 +67,7 @@ def generate_captions(figure_order: list[str] | None = None) -> tuple[list[tuple
 
     # Save to docx
     write_captions_doc(captions)
+    audit_and_save("\n\n".join(text for _, text in captions), label="entity_audit_captions")
 
     # Build display text
     display_lines = ["## Figure Captions (Stage 1)\n"]

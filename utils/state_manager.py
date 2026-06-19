@@ -8,6 +8,8 @@ DEFAULT_STATE = {
     "completed_stages": [],
     "figure_order": [],
     "references": [],
+    "reference_table": [],
+    "entity_audit": [],
     "abstract_word_count": 250,
     "merge_results_discussion": False,
     "chosen_title": "",

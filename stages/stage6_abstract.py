@@ -1,5 +1,6 @@
 from utils.claude_client import chat
 from utils.doc_builder import prepend_section
+from utils.entity_registry import audit_and_save, format_entity_constraints
 from utils.writing_standards import WRITING_STANDARDS
 
 ABSTRACT_STANDARDS = """
@@ -51,6 +52,7 @@ def generate_abstract(
 ) -> str:
     prompt = (
         f"Write an Abstract of approximately {word_count} words for a scientific manuscript.\n\n"
+        f"{format_entity_constraints()}\n\n"
         f"Results:\n{results_text[:1500]}\n\n"
         f"Introduction (key points):\n{intro_text[:800]}\n\n"
         f"Discussion (key points):\n{discussion_text[:800]}\n\n"
@@ -66,4 +68,5 @@ def generate_abstract(
 
     result = chat([{"role": "user", "content": prompt}], system=SYSTEM, max_tokens=800)
     prepend_section("manuscript_draft.docx", "Abstract", result)
+    audit_and_save(result, label="entity_audit_abstract")
     return result

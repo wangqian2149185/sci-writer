@@ -1,6 +1,12 @@
 from pathlib import Path
 from utils.claude_client import chat, chat_with_web_search
 from utils.doc_builder import save_references_md, replace_references_section
+from utils.reference_manager import (
+    bibliography_from_table,
+    load_reference_table,
+    merge_reference_records,
+    save_reference_table,
+)
 from utils.writing_standards import WRITING_STANDARDS
 import shutil
 
@@ -27,16 +33,20 @@ def get_journal_requirements(journal_name: str) -> str:
 
 
 def reformat_references(references: list[str], journal_name: str, journal_requirements: str) -> list[str]:
-    if not references:
+    reference_table = merge_reference_records(load_reference_table(), references)
+    if not reference_table:
         return references
 
-    refs_text = "\n".join(f"{i+1}. {r}" for i, r in enumerate(references))
+    refs_for_formatting = bibliography_from_table(reference_table)
+    refs_text = "\n".join(f"{i+1}. {r}" for i, r in enumerate(refs_for_formatting))
     prompt = (
         f"Reformat these references according to {journal_name} style:\n\n"
         f"Journal requirements:\n{journal_requirements}\n\n"
         f"References:\n{refs_text}\n\n"
         "Output the reformatted numbered reference list only. "
-        "Preserve the original numbering order exactly — do not renumber."
+        "Preserve the original numbering order exactly — do not renumber. "
+        "Do not add headings, commentary, warnings, notes to authors, placeholders, or separators. "
+        "If a reference is incomplete, format only the fields provided and keep the missing field absent."
     )
 
     result = chat([{"role": "user", "content": prompt}], system=SYSTEM, max_tokens=4000)
@@ -45,8 +55,26 @@ def reformat_references(references: list[str], journal_name: str, journal_requir
     new_refs = []
     for line in result.split("\n"):
         clean = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
+        if not clean:
+            continue
+        if clean.startswith("#") or clean in {"---", "***"}:
+            continue
+        if re.match(r"^(\*\*)?(notes?|editorial notes?|warnings?|reference list|reformatted reference list)\b", clean, re.I):
+            continue
+        if clean.startswith("- "):
+            continue
         if clean:
             new_refs.append(clean)
+
+    if len(new_refs) == len(reference_table):
+        for record, formatted in zip(reference_table, new_refs):
+            record["raw"] = formatted
+            record["journal_formatted_for"] = journal_name
+        save_reference_table(reference_table)
+    else:
+        # Keep the canonical source-of-truth when formatting output is structurally suspicious.
+        new_refs = bibliography_from_table(reference_table)
+        save_reference_table(reference_table)
 
     # Sync reformatted references back into all manuscript docx files
     for docx_name in ("manuscript_draft.docx", "manuscript_toned.docx"):

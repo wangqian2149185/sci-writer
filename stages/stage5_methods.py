@@ -1,6 +1,7 @@
 from pathlib import Path
 from utils.claude_client import chat
 from utils.doc_builder import append_section
+from utils.entity_registry import audit_and_save, format_entity_constraints
 from utils.writing_standards import WRITING_STANDARDS
 
 ROOT = Path(__file__).parent.parent
@@ -79,6 +80,7 @@ def generate_methods() -> tuple[str, list[str], str]:
 
     prompt = (
         f"Write a Materials and Methods section based ONLY on the following content:\n\n{combined}\n\n"
+        f"{format_entity_constraints()}\n\n"
         "Requirements:\n"
         "- Use past tense and passive voice\n"
         "- Be precise and reproducible\n"
@@ -88,6 +90,7 @@ def generate_methods() -> tuple[str, list[str], str]:
 
     result = chat([{"role": "user", "content": prompt}], system=SYSTEM, max_tokens=4000)
     append_section("manuscript_draft.docx", "Materials and Methods", result)
+    audit_and_save(result, label="entity_audit_methods")
 
     display = "## Materials and Methods (Stage 5)\n\n"
     if warnings:

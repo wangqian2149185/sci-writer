@@ -60,7 +60,9 @@ sci-writer/
 ├── utils/                    # 🔧 Shared utilities
 │   ├── claude_client.py      # Anthropic API wrapper
 │   ├── doc_builder.py        # python-docx helpers
+│   ├── entity_registry.py    # Controlled vocabulary & near-miss entity audit
 │   ├── figure_checker.py     # Pillow image validation
+│   ├── reference_manager.py  # Reference canonicalization & deduplication
 │   └── state_manager.py      # state.json persistence
 │
 ├── input/                    # 📥 Drop your files here
@@ -68,7 +70,8 @@ sci-writer/
 │   ├── captions/             # Caption .txt files (same base name as figures)
 │   ├── results/              # Results notes (.txt)
 │   ├── methods/              # Methods notes (.txt)
-│   └── tone_templates/       # Optional: up to 5 .pdf/.docx papers for tone analysis
+│   ├── tone_templates/       # Optional: up to 5 .pdf/.docx papers for tone analysis
+│   └── entity_registry.csv   # Optional: controlled vocabulary for proteins, genes, methods, references
 │
 └── output/                   # 📤 All generated files land here (auto-created)
     ├── manuscript_draft.docx
@@ -76,6 +79,10 @@ sci-writer/
     ├── manuscript_final.docx
     ├── figures_captions.docx
     ├── references.md
+    ├── canonical_references.json
+    ├── canonical_references.md
+    ├── uncertain_references.md
+    ├── entity_audit_*.md
     ├── tone.md
     └── state.json
 ```
@@ -136,8 +143,10 @@ pip install -r requirements.txt
 
 - **Match figure and caption filenames** — `figure1.png` pairs automatically with `figure1.txt`
 - **The richer your notes, the better the output** — detailed results and methods files lead to higher-quality drafts
+- **Use an entity registry for high-risk terms** — copy `input/entity_registry.example.csv` to `input/entity_registry.csv`, then list canonical protein/gene/method names, allowed aliases, and forbidden/confusing names
 - **Tone templates are optional but powerful** — drop 1–5 of your published papers into `tone_templates/` to write in your own voice
 - **Introduction is fully transparent** — the pipeline shows you the retrieved literature bullets first, lets you confirm, then expands into the full section
+- **References are canonicalized** — DOI/PMID/arXiv/title hashes are used to deduplicate sources before the final bibliography is generated
 
 ---
 

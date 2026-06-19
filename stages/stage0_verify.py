@@ -23,6 +23,7 @@ def run_verification() -> tuple[list[str], list[str], bool]:
     captions_dir = INPUT / "captions"
     results_dir = INPUT / "results"
     methods_dir = INPUT / "methods"
+    registry_path = INPUT / "entity_registry.csv"
 
     # Check folder existence
     for d in [figures_dir, captions_dir, results_dir, methods_dir]:
@@ -57,6 +58,21 @@ def run_verification() -> tuple[list[str], list[str], bool]:
     # Figure size warnings
     size_warnings = check_figure_sizes(figures_dir)
     warnings.extend(size_warnings)
+
+    if registry_path.exists():
+        try:
+            from utils.entity_registry import load_entity_registry
+            n_entities = len(load_entity_registry())
+            warnings.append(
+                f"Entity registry enabled with {n_entities} controlled term(s) from `input/entity_registry.csv`."
+            )
+        except Exception as e:
+            warnings.append(f"Entity registry found but could not be parsed: {e}")
+    else:
+        warnings.append(
+            "No active `input/entity_registry.csv` found. "
+            "Entity grounding audit is optional but recommended; see `input/entity_registry.example.csv`."
+        )
 
     ok = len(errors) == 0
     return errors, warnings, ok

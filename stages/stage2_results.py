@@ -1,6 +1,7 @@
 from pathlib import Path
 from utils.claude_client import chat
 from utils.doc_builder import append_section
+from utils.entity_registry import audit_and_save, format_entity_constraints
 from utils.writing_standards import WRITING_STANDARDS
 
 ROOT = Path(__file__).parent.parent
@@ -59,6 +60,7 @@ def generate_results(captions: list[tuple[int, str]]) -> str:
 
     prompt = (
         f"Write a Results section for a scientific manuscript.\n\n"
+        f"{format_entity_constraints()}\n\n"
         f"Figure captions:\n{caption_summary}\n\n"
         f"Results/significance notes supplied by the author:\n"
         + "\n\n---\n\n".join(results_texts)
@@ -69,4 +71,5 @@ def generate_results(captions: list[tuple[int, str]]) -> str:
 
     result = chat([{"role": "user", "content": prompt}], system=SYSTEM, max_tokens=3000)
     append_section("manuscript_draft.docx", "Results", result)
+    audit_and_save(result, label="entity_audit_results")
     return result

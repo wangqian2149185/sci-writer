@@ -1,0 +1,4 @@
+entity_type,canonical_name,allowed_aliases,forbidden_names,source
+Target protein,S100A12,"Calgranulin C; EN-RAGE","S100A8; S100A9; calprotectin",UniProt / lab record
+Method,CPMG relaxation dispersion,CPMG RD,CPMG HSQC if inaccurate,NMR method notes
+Reference,DOI / PMID / title,short citation,duplicate citation variants,PubMed / Zotero

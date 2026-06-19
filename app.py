@@ -335,6 +335,13 @@ def handle_stage3_select(user_input: str, history: list, state: dict) -> tuple[s
         )
         state["sections"]["introduction"] = intro
         state["references"] = refs
+        try:
+            from utils.reference_manager import load_reference_table
+            from utils.entity_registry import audit_text
+            state["reference_table"] = load_reference_table()
+            state["entity_audit"] = audit_text(intro)
+        except Exception:
+            pass
         state["_intro_written"] = True
         save_state(state)
         display = f"## Introduction (Stage 3)\n\n{intro}\n\nType `confirm` to proceed or paste corrections."
@@ -380,6 +387,17 @@ def handle_stage4(user_input: str, history: list, state: dict) -> tuple[str, lis
                 merge=False,
             )
             state["sections"]["discussion"] = text
+            state["references"] = refs
+            try:
+                from utils.reference_manager import load_reference_table
+                from utils.entity_registry import audit_text
+                state["reference_table"] = load_reference_table()
+                state["entity_audit"] = audit_text("\n\n".join([
+                    state["sections"].get("introduction", ""),
+                    text,
+                ]))
+            except Exception:
+                pass
             state["_discussion_generated"] = True
             save_state(state)
             display = (
@@ -1105,6 +1123,11 @@ def handle_stage10(user_input: str, history: list, state: dict) -> tuple[str, li
 
             refs = reformat_references(state.get("references", []), journal, reqs)
             state["references"] = refs
+            try:
+                from utils.reference_manager import load_reference_table
+                state["reference_table"] = load_reference_table()
+            except Exception:
+                pass
             from utils.doc_builder import save_references_md
             save_references_md(refs)
 
@@ -1220,6 +1243,7 @@ _FILE_GROUPS = [
     ("🖼️  Figures & Captions", ["figures", "captions"]),
     ("📊  Raw Data",            ["results", "methods"]),
     ("✍️  Style Templates",     ["tone_templates"]),
+    ("🧭  Entity Registry",     ["entity_registry.csv"]),
 ]
 
 
@@ -1230,6 +1254,23 @@ def get_file_status() -> str:
         parts.append(f'<div class="file-group"><div class="file-group-header">{group_label}</div>')
         for folder in folders:
             d = input_dir / folder
+            if folder.endswith(".csv"):
+                path = input_dir / folder
+                if path.exists():
+                    parts.append(
+                        f'<div class="folder-row">'
+                        f'<span class="fname">{folder}</span>'
+                        f'<span class="fbadge fbadge-ok">on</span>'
+                        f'</div>'
+                    )
+                else:
+                    parts.append(
+                        f'<div class="folder-row">'
+                        f'<span class="fname">{folder}</span>'
+                        f'<span class="fbadge fbadge-empty">off</span>'
+                        f'</div>'
+                    )
+                continue
             if d.exists():
                 files = sorted(f for f in d.iterdir() if not f.name.startswith("."))
                 n = len(files)

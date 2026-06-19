@@ -1,6 +1,15 @@
 from pathlib import Path
 from utils.claude_client import chat_with_web_search, chat
 from utils.doc_builder import save_intro_bullets, append_section, save_references_md
+from utils.entity_registry import audit_and_save, format_entity_constraints
+from utils.reference_manager import (
+    bibliography_from_table,
+    format_sources_for_prompt,
+    load_reference_table,
+    merge_reference_records,
+    parse_reference_bullets,
+    save_reference_table,
+)
 from utils.writing_standards import WRITING_STANDARDS
 
 ROOT = Path(__file__).parent.parent
@@ -169,6 +178,8 @@ def research_intro(keywords: str, results_text: str) -> tuple[list[str], str]:
     if not papers:
         plain = [l.strip() for l in response.split("\n") if len(l.strip()) > 30 and not l.strip().startswith("#")]
         save_intro_bullets(plain)
+        records = merge_reference_records(load_reference_table(), parse_reference_bullets(plain))
+        save_reference_table(records)
         if not plain:
             display = (
                 "## Introduction Research Papers (Stage 3)\n\n"
@@ -196,6 +207,8 @@ def research_intro(keywords: str, results_text: str) -> tuple[list[str], str]:
         bullets.append(entry)
 
     save_intro_bullets(bullets)
+    records = merge_reference_records(load_reference_table(), parse_reference_bullets(bullets))
+    save_reference_table(records)
 
     display = "## Introduction Research Papers (Stage 3)\n\n"
     for i, p in enumerate(papers, 1):
@@ -222,7 +235,11 @@ def write_introduction(
     Writes Introduction from selected bullets, anchored to confirmed Results findings.
     Returns (intro_text, updated_references).
     """
-    bullets_text = "\n".join(f"{i+1}. {b}" for i, b in enumerate(selected_bullets))
+    source_records = parse_reference_bullets(selected_bullets)
+    existing_records = merge_reference_records(load_reference_table(), references)
+    reference_table = merge_reference_records(existing_records, source_records)
+    save_reference_table(reference_table)
+    bullets_text = format_sources_for_prompt(source_records)
 
     findings_block = ""
     if confirmed_findings:
@@ -236,8 +253,9 @@ def write_introduction(
 
     prompt = (
         f"Write an Introduction for a scientific manuscript.\n\n"
+        f"{format_entity_constraints()}\n\n"
         f"{findings_block}"
-        f"Literature bullets (use as citation source material):\n{bullets_text}\n\n"
+        f"Canonical literature sources (use as citation source material):\n{bullets_text}\n\n"
         f"Results section (full context):\n{results_text[:1500]}\n\n"
         "Requirements:\n"
         "- 800–2000 words\n"
@@ -255,7 +273,10 @@ def write_introduction(
         "findings above represent the direct, logical answer to that gap\n"
         "- After the Introduction text, append a 'References' section listing all cited sources "
         "in strict order of first appearance, each entry numbered to match its superscript\n"
-        "- Only cite the sources provided in the literature bullets above"
+        "- Only cite the canonical sources provided above\n"
+        "- Treat each SOURCE_ID as a unique paper. If the same DOI, PMID, arXiv ID, or title hash "
+        "appears in multiple forms, it is still one source, not independent supporting evidence\n"
+        "- Do not create new references, invented short citations, or duplicate bibliography entries"
     )
 
     result = chat([{"role": "user", "content": prompt}], system=INTRO_SYSTEM, max_tokens=6000)
@@ -273,8 +294,11 @@ def write_introduction(
             if line:
                 new_refs.append(line)
 
-    all_refs = references + new_refs
+    all_records = merge_reference_records(reference_table, new_refs)
+    save_reference_table(all_records)
+    all_refs = bibliography_from_table(all_records)
     save_references_md(all_refs)
     append_section("manuscript_draft.docx", "Introduction", intro_text)
+    audit_and_save(intro_text, label="entity_audit_introduction")
 
     return intro_text, all_refs
