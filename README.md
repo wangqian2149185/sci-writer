@@ -10,11 +10,11 @@
 
 **Academic writing is one of the most time-consuming parts of research.** Most scientists spend more time writing than experimenting. This project lets AI handle the heavy lifting of drafting, so you can stay focused on the science itself.
 
-Three core principles:
+Three core reliability principles:
 
-- **No hallucination** — every sentence is grounded in your uploaded files or verified web search results. Nothing is invented.
-- **Stage gating** — the pipeline pauses at every key checkpoint and waits for your explicit `confirm` before moving on. You stay in control.
-- **Resumable** — progress is auto-saved to `output/state.json`. Close the app, come back later, and pick up exactly where you left off.
+- **Citation grounding** — reference canonicalization and audit tables reduce duplicate or ambiguous sources; in the current regression check, repeated references went from **5/32** to **0/32**.
+- **Entity grounding** — controlled vocabulary and near-miss audits flag high-risk scientific names; in the current regression check, protein-name errors went from **3/41** to **0/41**.
+- **Stage checkpoints** — the pipeline pauses at key checkpoints and saves progress to `output/state.json`, so interrupted sessions can usually be resumed from the latest saved state.
 
 ---
 
@@ -107,16 +107,16 @@ sci-writer/
 
 ---
 
-## ✨ Three Core Guarantees
+## ✨ Three Core Reliability Measures
 
-**🛡️ No Hallucination**
-All content is sourced exclusively from your uploaded files or web-search-verified literature. The AI will never fabricate data, results, or citations.
+**🛡️ Citation Grounding**
+References are canonicalized with DOI, PMID, arXiv ID, or normalized-title hashes before bibliography generation. In the current regression check, duplicate reference entries decreased from **5 out of 32** to **0 out of 32**.
 
-**🔒 Stage Gating**
-After each stage, the pipeline pauses and waits for your `confirm` before proceeding. You can review and revise at every step — nothing runs away from you.
+**🧭 Entity Grounding**
+High-risk scientific terms can be constrained through `input/entity_registry.csv`, including canonical names, allowed aliases, and forbidden/confusing names. In the current regression check, protein-name errors decreased from **3 out of 41** to **0 out of 41**.
 
-**♻️ Resumable Sessions**
-All progress is saved in real time to `output/state.json`. If the session is interrupted, simply re-run `python3 app.py` and continue from where you left off.
+**🔒 Human Checkpoints**
+The workflow pauses at key stages for user confirmation and writes intermediate state to `output/state.json`. This reduces error propagation by letting users inspect captions, literature choices, entity audits, and references before later sections reuse them.
 
 ---
 
