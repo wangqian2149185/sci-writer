@@ -8,7 +8,11 @@
 
 ## 🚀 Why Use This?
 
-**Academic writing is one of the most time-consuming parts of research.** Most scientists spend more time writing than experimenting. This project lets AI handle the heavy lifting of drafting, so you can stay focused on the science itself.
+Many researchers are highly skilled at asking scientific questions and solving technical problems. But writing those ideas clearly is often a separate challenge. Manuscripts and grant proposals can take a large amount of time, especially when the goal is to communicate complex results with precision, structure, and evidence.
+
+For many PIs, writing can become a major bottleneck. Time spent repeatedly drafting and revising text is time taken away from scientific thinking, mentoring, experimental design, and project direction.
+
+Sci-Writer is built to reduce that bottleneck. It helps researchers turn experimental notes, figures, and literature context into structured drafts more efficiently. It is not meant to replace scientific judgment. It is meant to help authors express their ideas faster, more clearly, and with better control over the final scientific message.
 
 Three core reliability principles:
 
